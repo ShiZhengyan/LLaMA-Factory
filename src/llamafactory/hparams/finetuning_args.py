@@ -440,6 +440,22 @@ class FinetuningArguments(
         default=False,
         metadata={"help": "Whether or not to compute the token-level accuracy at evaluation."},
     )
+    compute_entropy: bool = field(
+        default=False,
+        metadata={"help": "Whether or not to compute entropy metrics at evaluation."},
+    )
+    compute_perplexity: bool = field(
+        default=False,
+        metadata={"help": "Whether or not to compute perplexity metrics at evaluation."},
+    )
+    compute_reasoning_metrics: bool = field(
+        default=False,
+        metadata={"help": "Whether or not to compute separate entropy/perplexity for reasoning tokens."},
+    )
+    compute_tool_call_metrics: bool = field(
+        default=False,
+        metadata={"help": "Whether or not to compute separate entropy/perplexity for tool calling tokens."},
+    )
     disable_shuffling: bool = field(
         default=False,
         metadata={"help": "Whether or not to disable the shuffling of the training set."},

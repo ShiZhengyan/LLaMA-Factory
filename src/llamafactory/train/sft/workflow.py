@@ -17,14 +17,14 @@
 
 from typing import TYPE_CHECKING, Optional
 
-from ...data import SFTDataCollatorWith4DAttentionMask, get_dataset, get_template_and_fix_tokenizer
+from ...data import SFTDataCollatorWith4DAttentionMask, ToolCallingDataCollator, get_dataset, get_template_and_fix_tokenizer
 from ...extras.constants import IGNORE_INDEX
 from ...extras.logging import get_logger
 from ...extras.misc import calculate_tps
 from ...extras.ploting import plot_loss
 from ...model import load_model, load_tokenizer
 from ..trainer_utils import create_modelcard_and_push
-from .metric import ComputeAccuracy, ComputeSimilarity, eval_logit_processor
+from .metric import ComputeAccuracy, ComputeDetailedMetrics, ComputeSimilarity, eval_logit_processor
 from .trainer import CustomSeq2SeqTrainer
 
 
@@ -54,16 +54,34 @@ def run_sft(
     if getattr(model, "is_quantized", False) and not training_args.do_train:
         setattr(model, "_hf_peft_config_loaded", True)  # hack here: make model compatible with prediction
 
-    data_collator = SFTDataCollatorWith4DAttentionMask(
-        template=template,
-        model=model if not training_args.predict_with_generate else None,
-        pad_to_multiple_of=8 if training_args.do_train else None,  # for shift short attention
-        label_pad_token_id=IGNORE_INDEX if data_args.ignore_pad_token_for_loss else tokenizer.pad_token_id,
-        block_diag_attn=model_args.block_diag_attn,
-        attn_implementation=getattr(model.config, "_attn_implementation", None),
-        compute_dtype=model_args.compute_dtype,
-        **tokenizer_module,
-    )
+    # Determine if we need tool calling data collator
+    needs_tool_calling_collator = any([
+        getattr(finetuning_args, "compute_reasoning_metrics", False),
+        getattr(finetuning_args, "compute_tool_call_metrics", False)
+    ])
+    
+    if needs_tool_calling_collator:
+        data_collator = ToolCallingDataCollator(
+            template=template,
+            model=model if not training_args.predict_with_generate else None,
+            pad_to_multiple_of=8 if training_args.do_train else None,  # for shift short attention
+            label_pad_token_id=IGNORE_INDEX if data_args.ignore_pad_token_for_loss else tokenizer.pad_token_id,
+            block_diag_attn=model_args.block_diag_attn,
+            attn_implementation=getattr(model.config, "_attn_implementation", None),
+            compute_dtype=model_args.compute_dtype,
+            **tokenizer_module,
+        )
+    else:
+        data_collator = SFTDataCollatorWith4DAttentionMask(
+            template=template,
+            model=model if not training_args.predict_with_generate else None,
+            pad_to_multiple_of=8 if training_args.do_train else None,  # for shift short attention
+            label_pad_token_id=IGNORE_INDEX if data_args.ignore_pad_token_for_loss else tokenizer.pad_token_id,
+            block_diag_attn=model_args.block_diag_attn,
+            attn_implementation=getattr(model.config, "_attn_implementation", None),
+            compute_dtype=model_args.compute_dtype,
+            **tokenizer_module,
+        )
 
     # Metric utils
     metric_module = {}
@@ -72,6 +90,27 @@ def run_sft(
     elif finetuning_args.compute_accuracy:
         metric_module["compute_metrics"] = ComputeAccuracy()
         metric_module["preprocess_logits_for_metrics"] = eval_logit_processor
+    elif any([
+        getattr(finetuning_args, "compute_entropy", False),
+        getattr(finetuning_args, "compute_perplexity", False),
+        getattr(finetuning_args, "compute_reasoning_metrics", False),
+        getattr(finetuning_args, "compute_tool_call_metrics", False)
+    ]):
+        # Determine if we need tokenizer for tool calling metrics
+        needs_tokenizer = any([
+            getattr(finetuning_args, "compute_reasoning_metrics", False),
+            getattr(finetuning_args, "compute_tool_call_metrics", False)
+        ])
+        
+        metric_module["compute_metrics"] = ComputeDetailedMetrics(
+            tokenizer=tokenizer if needs_tokenizer else None,
+            compute_entropy=getattr(finetuning_args, "compute_entropy", False),
+            compute_perplexity=getattr(finetuning_args, "compute_perplexity", False),
+            compute_tool_calling_metrics=needs_tokenizer,
+            compute_reasoning_metrics=getattr(finetuning_args, "compute_reasoning_metrics", False),
+            compute_tool_call_metrics=getattr(finetuning_args, "compute_tool_call_metrics", False)
+        )
+        metric_module["preprocess_logits_for_metrics"] = lambda logits, _: logits
 
     # Keyword arguments for `model.generate`
     gen_kwargs = generating_args.to_dict(obey_generation_config=True)

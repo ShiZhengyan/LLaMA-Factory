@@ -18,6 +18,7 @@
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
+import re
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -248,6 +249,118 @@ class SFTDataCollatorWith4DAttentionMask(MultiModalDataCollatorForSeq2Seq):
         for key, value in features.items():  # cast data dtype for paligemma
             if torch.is_tensor(value) and torch.is_floating_point(value):
                 features[key] = value.to(self.compute_dtype)
+
+        return features
+
+
+def classify_tokens_for_tool_calling(text: str, input_ids: "torch.Tensor", tokenizer) -> dict[str, "torch.Tensor"]:
+    """Classify tokens for tool calling metrics during preprocessing.
+    
+    Simplified two-level classification:
+    - REASONING: Normal conversation text outside <function>...</function> blocks
+    - TOOL_CALL: Entire <function>...</function> blocks as holistic units
+    """
+    # Find all function blocks (entire <function>...</function> sections)
+    function_block_pattern = re.compile(r'<function=[^>]+>.*?</function>', re.DOTALL)
+    function_blocks = list(function_block_pattern.finditer(text))
+    
+    # Convert input_ids to tokens for classification
+    tokens = tokenizer.convert_ids_to_tokens(input_ids)
+    seq_len = len(tokens)
+    
+    # Initialize classification masks
+    reasoning_mask = torch.ones(seq_len, dtype=torch.bool)  # Default to reasoning
+    tool_call_mask = torch.zeros(seq_len, dtype=torch.bool)
+    
+    # Reconstruct text with token-to-position mapping
+    token_char_spans = []
+    reconstructed_text = ""
+    
+    for i, token in enumerate(tokens):
+        # Handle special tokens
+        if token in [tokenizer.pad_token, tokenizer.eos_token, tokenizer.bos_token]:
+            reasoning_mask[i] = False  # Special tokens excluded from all metrics
+            token_char_spans.append((len(reconstructed_text), len(reconstructed_text)))
+            continue
+        
+        # Convert token to text
+        token_text = tokenizer.convert_tokens_to_string([token])
+        
+        # Record the character span for this token
+        start_pos = len(reconstructed_text)
+        reconstructed_text += token_text
+        end_pos = len(reconstructed_text)
+        token_char_spans.append((start_pos, end_pos))
+    
+    # Classify tokens based on their position relative to function blocks
+    for i, (start_pos, end_pos) in enumerate(token_char_spans):
+        if reasoning_mask[i] == False:  # Skip special tokens
+            continue
+            
+        # Check if token overlaps with any function block
+        is_in_tool_call = False
+        for block in function_blocks:
+            block_start, block_end = block.span()
+            
+            # Check if token overlaps with this function block
+            if not (end_pos <= block_start or start_pos >= block_end):
+                is_in_tool_call = True
+                break
+        
+        if is_in_tool_call:
+            # Token is inside a function block -> TOOL_CALL
+            reasoning_mask[i] = False
+            tool_call_mask[i] = True
+        # else: Token is outside function blocks -> REASONING (already True by default)
+    
+    return {
+        "reasoning_mask": reasoning_mask,  
+        "tool_call_mask": tool_call_mask
+    }
+
+
+@dataclass
+class ToolCallingDataCollator(SFTDataCollatorWith4DAttentionMask):
+    r"""Data collator that adds tool calling token classification masks."""
+
+    def __call__(self, features: list[dict[str, Any]]) -> dict[str, "torch.Tensor"]:
+        # Store original features for token classification
+        original_features = []
+        for feature in features:
+            # Decode input_ids to get original text for classification
+            input_ids = feature.get("input_ids", [])
+            if input_ids:
+                text = self.tokenizer.decode(input_ids, skip_special_tokens=False)
+                token_masks = classify_tokens_for_tool_calling(text, torch.tensor(input_ids), self.tokenizer)
+                original_features.append(token_masks)
+            else:
+                original_features.append(None)
+        
+        # Call parent to handle normal processing (including 4D attention mask)
+        features = super().__call__(features)
+        
+        # Add token classification masks to batch
+        if original_features:
+            batch_size, seq_len = features["input_ids"].shape
+            
+            # Initialize batch masks
+            reasoning_masks = torch.zeros(batch_size, seq_len, dtype=torch.bool)
+            tool_call_masks = torch.zeros(batch_size, seq_len, dtype=torch.bool)
+            
+            for i, token_masks in enumerate(original_features):
+                if token_masks is not None:
+                    # Truncate or pad masks to match processed sequence length
+                    for mask_name, batch_mask in [
+                        ("reasoning_mask", reasoning_masks),
+                        ("tool_call_mask", tool_call_masks)
+                    ]:
+                        original_mask = token_masks[mask_name]
+                        mask_len = min(len(original_mask), seq_len)
+                        batch_mask[i, :mask_len] = original_mask[:mask_len]
+            
+            # Add masks to features
+            features["reasoning_mask"] = reasoning_masks
+            features["tool_call_mask"] = tool_call_masks
 
         return features
 
