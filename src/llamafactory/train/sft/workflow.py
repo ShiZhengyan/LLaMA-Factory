@@ -106,7 +106,6 @@ def run_sft(
             tokenizer=tokenizer if needs_tokenizer else None,
             compute_entropy=getattr(finetuning_args, "compute_entropy", False),
             compute_perplexity=getattr(finetuning_args, "compute_perplexity", False),
-            compute_tool_calling_metrics=needs_tokenizer,
             compute_reasoning_metrics=getattr(finetuning_args, "compute_reasoning_metrics", False),
             compute_tool_call_metrics=getattr(finetuning_args, "compute_tool_call_metrics", False)
         )
