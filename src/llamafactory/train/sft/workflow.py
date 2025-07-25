@@ -118,7 +118,7 @@ def run_sft(
         logger.info("🎯 Using DetailedMetricsSeq2SeqTrainer for training with detailed metrics")
         trainer = DetailedMetricsSeq2SeqTrainer(
             finetuning_args=finetuning_args,
-            processor=None,  # Add processor parameter
+            processor=tokenizer_module.get("processor"),  # Get processor from tokenizer_module
             model=model,
             args=training_args,
             data_collator=data_collator,
@@ -129,21 +129,21 @@ def run_sft(
             compute_reasoning_metrics=getattr(finetuning_args, "compute_reasoning_metrics", False),
             compute_tool_call_metrics=getattr(finetuning_args, "compute_tool_call_metrics", False),
             **dataset_module,
-            **tokenizer_module,
+            **{k: v for k, v in tokenizer_module.items() if k != "processor"},  # Exclude processor from tokenizer_module
             **metric_module,
         )
     else:
         logger.info("🔧 Using standard CustomSeq2SeqTrainer (no detailed metrics requested)")
         trainer = CustomSeq2SeqTrainer(
             finetuning_args=finetuning_args,
-            processor=None,  # Add processor parameter  
+            processor=tokenizer_module.get("processor"),  # Get processor from tokenizer_module
             model=model,
             args=training_args,
             data_collator=data_collator,
             callbacks=callbacks,
             gen_kwargs=gen_kwargs,
             **dataset_module,
-            **tokenizer_module,
+            **{k: v for k, v in tokenizer_module.items() if k != "processor"},  # Exclude processor from tokenizer_module
             **metric_module,
         )
 
