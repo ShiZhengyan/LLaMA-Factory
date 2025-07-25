@@ -18,7 +18,11 @@ from typing import Dict, Any, Union
 from typing_extensions import override
 
 from ...extras.constants import IGNORE_INDEX
+from ...extras.logging import get_logger
 from .trainer import CustomSeq2SeqTrainer
+
+
+logger = get_logger(__name__)
 
 
 class DetailedMetricsSeq2SeqTrainer(CustomSeq2SeqTrainer):
@@ -28,6 +32,8 @@ class DetailedMetricsSeq2SeqTrainer(CustomSeq2SeqTrainer):
 
     def __init__(
         self,
+        finetuning_args,
+        processor=None,
         compute_entropy: bool = True,
         compute_perplexity: bool = True,
         compute_reasoning_metrics: bool = False,
@@ -35,12 +41,23 @@ class DetailedMetricsSeq2SeqTrainer(CustomSeq2SeqTrainer):
         entropy_k: int = 10,
         **kwargs,
     ) -> None:
-        super().__init__(**kwargs)
+        logger.info("🚀 Initializing DetailedMetricsSeq2SeqTrainer")
+        logger.info(f"📊 Metrics configuration:")
+        logger.info(f"   - compute_entropy: {compute_entropy}")
+        logger.info(f"   - compute_perplexity: {compute_perplexity}")
+        logger.info(f"   - compute_reasoning_metrics: {compute_reasoning_metrics}")
+        logger.info(f"   - compute_tool_call_metrics: {compute_tool_call_metrics}")
+        logger.info(f"   - entropy_k: {entropy_k}")
+        
+        super().__init__(finetuning_args=finetuning_args, processor=processor, **kwargs)
+        
         self.compute_entropy = compute_entropy
         self.compute_perplexity = compute_perplexity
         self.compute_reasoning_metrics = compute_reasoning_metrics
         self.compute_tool_call_metrics = compute_tool_call_metrics
         self.entropy_k = entropy_k
+        
+        logger.info("✅ DetailedMetricsSeq2SeqTrainer initialized successfully")
 
     @override
     def compute_loss(self, model, inputs, return_outputs=False, *args, **kwargs):
@@ -67,8 +84,10 @@ class DetailedMetricsSeq2SeqTrainer(CustomSeq2SeqTrainer):
             
             # Compute metrics if enabled and we have required inputs
             if self._should_compute_metrics(inputs):
+                logger.debug("💡 Computing detailed metrics for current batch")
                 metrics = self._compute_metrics(shift_logits, shift_labels, loss, inputs)
                 self._log_metrics(metrics)
+                logger.debug(f"📈 Logged {len(metrics)} metrics: {list(metrics.keys())}")
         else:
             loss = outputs.loss if hasattr(outputs, 'loss') else None
         
@@ -203,4 +222,10 @@ class DetailedMetricsSeq2SeqTrainer(CustomSeq2SeqTrainer):
         if metrics:
             prefix = "train_" if self.model.training else "eval_"
             prefixed_metrics = {f"{prefix}{k}": v for k, v in metrics.items()}
+            
+            # Log with info level for key metrics during training
+            if self.model.training and any(key in metrics for key in ['entropy', 'perplexity']):
+                mode = "training" if self.model.training else "evaluation"
+                logger.info(f"🔍 Detailed metrics ({mode}): {prefixed_metrics}")
+            
             self.log(prefixed_metrics)

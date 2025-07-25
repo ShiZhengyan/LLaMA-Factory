@@ -68,6 +68,15 @@ def run_sft(
         getattr(finetuning_args, "compute_tool_call_metrics", False)
     ])
     
+    # Log the metric configuration
+    logger.info("📊 Detailed metrics configuration:")
+    logger.info(f"   - compute_entropy: {getattr(finetuning_args, 'compute_entropy', False)}")
+    logger.info(f"   - compute_perplexity: {getattr(finetuning_args, 'compute_perplexity', False)}")
+    logger.info(f"   - compute_reasoning_metrics: {getattr(finetuning_args, 'compute_reasoning_metrics', False)}")
+    logger.info(f"   - compute_tool_call_metrics: {getattr(finetuning_args, 'compute_tool_call_metrics', False)}")
+    logger.info(f"   - needs_detailed_metrics: {needs_detailed_metrics}")
+    logger.info(f"   - needs_tool_calling_collator: {needs_tool_calling_collator}")
+    
     if needs_tool_calling_collator:
         data_collator = ToolCallingDataCollator(
             template=template,
@@ -106,10 +115,12 @@ def run_sft(
 
     # Initialize our Trainer - use DetailedMetricsSeq2SeqTrainer if detailed metrics are needed
     if needs_detailed_metrics:
+        logger.info("🎯 Using DetailedMetricsSeq2SeqTrainer for training with detailed metrics")
         trainer = DetailedMetricsSeq2SeqTrainer(
+            finetuning_args=finetuning_args,
+            processor=None,  # Add processor parameter
             model=model,
             args=training_args,
-            finetuning_args=finetuning_args,
             data_collator=data_collator,
             callbacks=callbacks,
             gen_kwargs=gen_kwargs,
@@ -122,10 +133,12 @@ def run_sft(
             **metric_module,
         )
     else:
+        logger.info("🔧 Using standard CustomSeq2SeqTrainer (no detailed metrics requested)")
         trainer = CustomSeq2SeqTrainer(
+            finetuning_args=finetuning_args,
+            processor=None,  # Add processor parameter  
             model=model,
             args=training_args,
-            finetuning_args=finetuning_args,
             data_collator=data_collator,
             callbacks=callbacks,
             gen_kwargs=gen_kwargs,
