@@ -24,8 +24,9 @@ from ...extras.misc import calculate_tps
 from ...extras.ploting import plot_loss
 from ...model import load_model, load_tokenizer
 from ..trainer_utils import create_modelcard_and_push
-from .metric import ComputeAccuracy, ComputeDetailedMetrics, ComputeSimilarity, eval_logit_processor
+from .metric import ComputeAccuracy, ComputeSimilarity, eval_logit_processor
 from .trainer import CustomSeq2SeqTrainer
+from .trainer_with_metrics import DetailedMetricsSeq2SeqTrainer
 
 
 if TYPE_CHECKING:
@@ -54,8 +55,15 @@ def run_sft(
     if getattr(model, "is_quantized", False) and not training_args.do_train:
         setattr(model, "_hf_peft_config_loaded", True)  # hack here: make model compatible with prediction
 
-    # Determine if we need tool calling data collator
+    # Determine if we need tool calling data collator or detailed metrics
     needs_tool_calling_collator = any([
+        getattr(finetuning_args, "compute_reasoning_metrics", False),
+        getattr(finetuning_args, "compute_tool_call_metrics", False)
+    ])
+    
+    needs_detailed_metrics = any([
+        getattr(finetuning_args, "compute_entropy", False),
+        getattr(finetuning_args, "compute_perplexity", False),
         getattr(finetuning_args, "compute_reasoning_metrics", False),
         getattr(finetuning_args, "compute_tool_call_metrics", False)
     ])
@@ -83,51 +91,48 @@ def run_sft(
             **tokenizer_module,
         )
 
-    # Metric utils
+    # Metric utils - only for evaluation-only metrics
     metric_module = {}
     if training_args.predict_with_generate:
         metric_module["compute_metrics"] = ComputeSimilarity(tokenizer=tokenizer)
     elif finetuning_args.compute_accuracy:
         metric_module["compute_metrics"] = ComputeAccuracy()
         metric_module["preprocess_logits_for_metrics"] = eval_logit_processor
-    elif any([
-        getattr(finetuning_args, "compute_entropy", False),
-        getattr(finetuning_args, "compute_perplexity", False),
-        getattr(finetuning_args, "compute_reasoning_metrics", False),
-        getattr(finetuning_args, "compute_tool_call_metrics", False)
-    ]):
-        # Determine if we need tokenizer for tool calling metrics
-        needs_tokenizer = any([
-            getattr(finetuning_args, "compute_reasoning_metrics", False),
-            getattr(finetuning_args, "compute_tool_call_metrics", False)
-        ])
-        
-        metric_module["compute_metrics"] = ComputeDetailedMetrics(
-            tokenizer=tokenizer if needs_tokenizer else None,
-            compute_entropy=getattr(finetuning_args, "compute_entropy", False),
-            compute_perplexity=getattr(finetuning_args, "compute_perplexity", False),
-            compute_reasoning_metrics=getattr(finetuning_args, "compute_reasoning_metrics", False),
-            compute_tool_call_metrics=getattr(finetuning_args, "compute_tool_call_metrics", False)
-        )
-        metric_module["preprocess_logits_for_metrics"] = lambda logits, _: logits
 
     # Keyword arguments for `model.generate`
     gen_kwargs = generating_args.to_dict(obey_generation_config=True)
     gen_kwargs["eos_token_id"] = [tokenizer.eos_token_id] + tokenizer.additional_special_tokens_ids
     gen_kwargs["pad_token_id"] = tokenizer.pad_token_id
 
-    # Initialize our Trainer
-    trainer = CustomSeq2SeqTrainer(
-        model=model,
-        args=training_args,
-        finetuning_args=finetuning_args,
-        data_collator=data_collator,
-        callbacks=callbacks,
-        gen_kwargs=gen_kwargs,
-        **dataset_module,
-        **tokenizer_module,
-        **metric_module,
-    )
+    # Initialize our Trainer - use DetailedMetricsSeq2SeqTrainer if detailed metrics are needed
+    if needs_detailed_metrics:
+        trainer = DetailedMetricsSeq2SeqTrainer(
+            model=model,
+            args=training_args,
+            finetuning_args=finetuning_args,
+            data_collator=data_collator,
+            callbacks=callbacks,
+            gen_kwargs=gen_kwargs,
+            compute_entropy=getattr(finetuning_args, "compute_entropy", False),
+            compute_perplexity=getattr(finetuning_args, "compute_perplexity", False),
+            compute_reasoning_metrics=getattr(finetuning_args, "compute_reasoning_metrics", False),
+            compute_tool_call_metrics=getattr(finetuning_args, "compute_tool_call_metrics", False),
+            **dataset_module,
+            **tokenizer_module,
+            **metric_module,
+        )
+    else:
+        trainer = CustomSeq2SeqTrainer(
+            model=model,
+            args=training_args,
+            finetuning_args=finetuning_args,
+            data_collator=data_collator,
+            callbacks=callbacks,
+            gen_kwargs=gen_kwargs,
+            **dataset_module,
+            **tokenizer_module,
+            **metric_module,
+        )
 
     # Training
     if training_args.do_train:
